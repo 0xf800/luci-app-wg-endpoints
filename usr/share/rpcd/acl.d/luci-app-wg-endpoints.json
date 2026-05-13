@@ -1,0 +1,17 @@
+{
+	"luci-app-wg-endpoints": {
+		"description": "Grant access to WireGuard Endpoint management",
+		"read": {
+			"uci": [ "network" ],
+			"ubus": {
+				"luci.wg-endpoints": [ "check_status", "apply", "get_active_peer", "add_peer", "remove_peer" ]
+			}
+		},
+		"write": {
+			"uci": [ "network" ],
+			"ubus": {
+				"luci.wg-endpoints": [ "check_status", "apply", "get_active_peer", "add_peer", "remove_peer" ]
+			}
+		}
+	}
+}

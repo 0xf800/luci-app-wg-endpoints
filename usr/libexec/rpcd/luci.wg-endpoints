@@ -1,0 +1,323 @@
+#!/bin/sh
+# WireGuard endpoint switcher backend for LuCI
+# Methods: check_status, apply, get_active_peer, add_peer, remove_peer
+
+LOGFILE="/tmp/wgdebug_$(date +%Y%m%d_%H%M%S).log"
+
+log() {
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOGFILE"
+}
+
+pbr_installed() {
+	[ -x /etc/init.d/pbr ] && return 0
+	return 1
+}
+
+pbr_running() {
+	/etc/init.d/pbr running >/dev/null 2>&1 && return 0
+	return 1
+}
+
+# Wait for WireGuard handshake, max $1 seconds
+# Sets HANDSHAKE_OK=1 and ACTIVE_KEY if successful
+wait_handshake() {
+	local max_wait="$1"
+	local i=0
+	HANDSHAKE_OK=0
+	ACTIVE_KEY=""
+	while [ $i -lt "$max_wait" ]; do
+		sleep 1
+		HS=$(wg show "$IFACE" latest-handshakes 2>/dev/null \
+			| awk '$2 > 0 {print $1}' | head -1)
+		if [ -n "$HS" ]; then
+			HANDSHAKE_OK=1
+			ACTIVE_KEY="$HS"
+			log "Handshake OK after ${i}s key=$HS"
+			return 0
+		fi
+		i=$((i+1))
+	done
+	log "Handshake FAILED after ${max_wait}s"
+	return 1
+}
+
+# Restart WireGuard interface
+restart_iface() {
+	log "ifdown $IFACE"
+	ifdown "$IFACE" >> "$LOGFILE" 2>&1
+	log "Sleeping 2s"
+	sleep 2
+	log "ifup $IFACE"
+	ifup "$IFACE" >> "$LOGFILE" 2>&1
+	log "ifup done"
+}
+
+# Start PBR + curl IP check in background
+start_pbr_and_report() {
+	local desc="$1"
+	local duration="$2"
+	if pbr_installed; then
+		log "Starting PBR (background)"
+		(
+			/etc/init.d/pbr start >> "$LOGFILE" 2>&1
+			log "PBR started"
+			logger -t "wg-endpoints" \
+				"${desc} - PBR started - done, switch duration ${duration}s"
+			WAN_IP=$(curl -s --max-time 5 --interface "$IFACE" \
+				icanhazip.com 2>/dev/null | tr -d '[:space:]')
+			[ -n "$WAN_IP" ] \
+				&& logger -t "wg-endpoints" \
+					"active public ip for $IFACE: $WAN_IP" \
+				|| logger -t "wg-endpoints" \
+					"ip lookup failed for $IFACE"
+		) &
+	else
+		logger -t "wg-endpoints" "${desc} - done, switch duration ${duration}s"
+		WAN_IP=$(curl -s --max-time 5 --interface "$IFACE" \
+			icanhazip.com 2>/dev/null | tr -d '[:space:]')
+		[ -n "$WAN_IP" ] \
+			&& logger -t "wg-endpoints" \
+				"active public ip for $IFACE: $WAN_IP" \
+			|| logger -t "wg-endpoints" \
+				"ip lookup failed for $IFACE"
+	fi
+}
+
+case "$1" in
+	list)
+		echo '{
+			"check_status":    { "iface": "string" },
+			"apply":           { "iface": "string", "peer": "string" },
+			"get_active_peer": { "iface": "string" },
+			"add_peer":        { "iface": "string", "desc": "string", "host": "string", "pubkey": "string", "port": "string" },
+			"remove_peer":     { "peer": "string" }
+		}'
+	;;
+	call)
+		ARGS=$(cat)
+
+		case "$2" in
+
+			check_status)
+				IFACE=$(echo "$ARGS" | jsonfilter -e "@.iface")
+				log "=== check_status iface=$IFACE ==="
+
+				if pbr_installed; then
+					PBR_INSTALLED=1
+					pbr_running && PBR_ACTIVE=1 || PBR_ACTIVE=0
+				else
+					PBR_INSTALLED=0
+					PBR_ACTIVE=0
+				fi
+				log "PBR installed=$PBR_INSTALLED active=$PBR_ACTIVE"
+
+				WG_OUT=$(wg show "$IFACE" 2>/dev/null)
+				ENDPOINT=$(echo "$WG_OUT" | awk '/endpoint/ {print $2}')
+				HANDSHAKE=$(echo "$WG_OUT" \
+					| awk '/latest handshake/ {$1=$2=""; print $0}' | xargs)
+				PUBKEY=$(echo "$WG_OUT" | awk '/^  public key/ {print $3}')
+				log "WG endpoint=$ENDPOINT handshake=$HANDSHAKE"
+
+				printf '{ "pbr_installed": %d, "pbr_active": %d, "wg_endpoint": "%s", "wg_handshake": "%s", "wg_pubkey": "%s" }' \
+					"$PBR_INSTALLED" "$PBR_ACTIVE" \
+					"$ENDPOINT" "$HANDSHAKE" "$PUBKEY"
+			;;
+
+			apply)
+				IFACE=$(echo "$ARGS" | jsonfilter -e "@.iface")
+				PEER=$(echo  "$ARGS" | jsonfilter -e "@.peer")
+				log "=== START apply iface=$IFACE peer=$PEER ==="
+
+				if [ -z "$IFACE" ] || [ -z "$PEER" ]; then
+					log "ERROR: missing iface or peer"
+					echo '{ "error": "Missing interface or peer name" }'
+					exit 1
+				fi
+
+				START_TIME=$(date +%s)
+
+				# Step 1: load current config and find previous active peer
+				. /lib/functions.sh
+				config_load network
+
+				PREV_PEER=""
+				find_active_peer() {
+					local section="$1"
+					local disabled
+					config_get disabled "$section" "disabled" "0"
+					[ "$disabled" != "1" ] && PREV_PEER="$section"
+				}
+				config_foreach find_active_peer "wireguard_${IFACE}"
+				PREV_DESC=$(uci get "network.${PREV_PEER}.description" \
+					2>/dev/null || echo "$PREV_PEER")
+				log "Previous active peer: $PREV_PEER ($PREV_DESC)"
+
+				# Step 2: set disabled flags for new peer
+				set_peer_state() {
+					local section="$1"
+					if [ "$section" = "$PEER" ]; then
+						uci set "network.${section}.disabled=0"
+					else
+						uci set "network.${section}.disabled=1"
+					fi
+				}
+				config_foreach set_peer_state "wireguard_${IFACE}"
+				PEER_DESC=$(uci get "network.${PEER}.description" \
+					2>/dev/null || echo "$PEER")
+				log "UCI: activated peer $PEER ($PEER_DESC), disabled others"
+
+				# Step 3: commit UCI
+				log "UCI commit network"
+				uci commit network >> "$LOGFILE" 2>&1
+				ubus call service event \
+					'{"type":"config.change","data":{"package":"network"}}' \
+					>/dev/null 2>&1 || true
+				log "UCI commit done"
+				uci show network | grep "wireguard_${IFACE}" >> "$LOGFILE" 2>&1
+
+				# Step 4: stop PBR if active
+				PBR_WAS_ACTIVE=0
+				if pbr_installed && pbr_running; then
+					PBR_WAS_ACTIVE=1
+					logger -t "wg-endpoints" \
+						"switching endpoint initiated for $IFACE - PBR detected, stopping"
+					log "Stopping PBR"
+					/etc/init.d/pbr stop >> "$LOGFILE" 2>&1
+					log "PBR stopped"
+				else
+					logger -t "wg-endpoints" \
+						"switching endpoint initiated for $IFACE"
+					log "PBR not active, skipping stop"
+				fi
+
+				# Step 5: restart interface and wait for handshake
+				restart_iface
+				log "Waiting for handshake (max 10s)"
+				wait_handshake 10
+				DURATION=$(( $(date +%s) - START_TIME ))
+
+				if [ "$HANDSHAKE_OK" -eq 1 ]; then
+					# Success — return result, start PBR in background
+					log "=== END apply handshake_ok=1 ==="
+					printf '{ "result": "ok", "handshake": 1, "active_key": "%s", "pbr_was_active": %d, "rolling_back": 0 }' \
+						"$ACTIVE_KEY" "$PBR_WAS_ACTIVE"
+
+					start_pbr_and_report \
+						"endpoint changed to $PEER_DESC for $IFACE" \
+						"$DURATION"
+
+				else
+					# Handshake failed — return immediately, rollback in background
+					log "=== END apply handshake_ok=0, initiating rollback ==="
+					logger -t "wg-endpoints" \
+						"handshake with $PEER_DESC failed, switching back to $PREV_DESC"
+
+					printf '{ "result": "ok", "handshake": 0, "active_key": "", "pbr_was_active": %d, "rolling_back": 1, "prev_desc": "%s" }' \
+						"$PBR_WAS_ACTIVE" "$PREV_DESC"
+
+					# Rollback in background — JS already has its response
+					(
+						log "=== ROLLBACK to $PREV_PEER ($PREV_DESC) ==="
+
+						# Re-enable previous peer
+						. /lib/functions.sh
+						config_load network
+						rollback_peer_state() {
+							local section="$1"
+							if [ "$section" = "$PREV_PEER" ]; then
+								uci set "network.${section}.disabled=0"
+							else
+								uci set "network.${section}.disabled=1"
+							fi
+						}
+						config_foreach rollback_peer_state "wireguard_${IFACE}"
+						uci commit network >> "$LOGFILE" 2>&1
+						ubus call service event \
+							'{"type":"config.change","data":{"package":"network"}}' \
+							>/dev/null 2>&1 || true
+						log "Rollback UCI committed"
+
+						restart_iface
+						log "Waiting for rollback handshake (max 10s)"
+						wait_handshake 10
+						ROLLBACK_DURATION=$(( $(date +%s) - START_TIME ))
+
+						if [ "$HANDSHAKE_OK" -eq 1 ]; then
+							log "Rollback handshake OK"
+							start_pbr_and_report \
+								"endpoint changed to $PREV_DESC for $IFACE (rollback)" \
+								"$ROLLBACK_DURATION"
+						else
+							# Double fail — start PBR anyway, report failure
+							log "Rollback handshake FAILED — double fail"
+							wg show "$IFACE" >> "$LOGFILE" 2>&1
+							logger -t "wg-endpoints" \
+								"switching failed, activate debug logs and try again in a few minutes"
+							if pbr_installed; then
+								log "Starting PBR despite double fail"
+								/etc/init.d/pbr start >> "$LOGFILE" 2>&1
+								log "PBR started"
+							fi
+						fi
+					) &
+				fi
+			;;
+
+			get_active_peer)
+				IFACE=$(echo "$ARGS" | jsonfilter -e "@.iface")
+				KEY=$(wg show "$IFACE" latest-handshakes 2>/dev/null \
+					| awk '$2 > 0 {print $1}' | head -1)
+				printf '{ "active_key": "%s" }' "${KEY:-}"
+			;;
+
+			add_peer)
+				IFACE=$(echo  "$ARGS" | jsonfilter -e "@.iface")
+				DESC=$(echo   "$ARGS" | jsonfilter -e "@.desc")
+				HOST=$(echo   "$ARGS" | jsonfilter -e "@.host")
+				PUBKEY=$(echo "$ARGS" | jsonfilter -e "@.pubkey")
+				PORT=$(echo   "$ARGS" | jsonfilter -e "@.port")
+				PORT=${PORT:-51820}
+
+				if [ -z "$IFACE" ] || [ -z "$DESC" ] || \
+				   [ -z "$HOST" ]  || [ -z "$PUBKEY" ]; then
+					echo '{ "error": "Missing required field" }'
+					exit 1
+				fi
+
+				SECTION=$(uci add network "wireguard_${IFACE}")
+				uci set "network.${SECTION}.description=${DESC}"
+				uci set "network.${SECTION}.endpoint_host=${HOST}"
+				uci set "network.${SECTION}.public_key=${PUBKEY}"
+				uci set "network.${SECTION}.endpoint_port=${PORT}"
+				uci set "network.${SECTION}.persistent_keepalive=25"
+				uci set "network.${SECTION}.allowed_ips=0.0.0.0/0"
+				uci set "network.${SECTION}.route_allowed_ips=1"
+				uci set "network.${SECTION}.disabled=1"
+				uci commit network
+				ubus call service event \
+					'{"type":"config.change","data":{"package":"network"}}' \
+					>/dev/null 2>&1 || true
+
+				printf '{ "result": "ok", "section": "%s" }' "$SECTION"
+			;;
+
+			remove_peer)
+				PEER=$(echo "$ARGS" | jsonfilter -e "@.peer")
+
+				if [ -z "$PEER" ]; then
+					echo '{ "error": "Missing peer name" }'
+					exit 1
+				fi
+
+				uci delete "network.${PEER}"
+				uci commit network
+				ubus call service event \
+					'{"type":"config.change","data":{"package":"network"}}' \
+					>/dev/null 2>&1 || true
+
+				printf '{ "result": "ok" }'
+			;;
+
+		esac
+	;;
+esac
