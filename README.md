@@ -1,6 +1,6 @@
 # luci-app-wg-endpoints
 
-A LuCI application for OpenWrt to easily switch between different WireGuard endpoints.
+A LuCI application for OpenWrt to easily managing different WireGuard endpoints.
 
 ## Features
 - **Endpoint Switching**: Quickly toggle between pre-configured WireGuard servers.
@@ -17,8 +17,8 @@ A LuCI application for OpenWrt to easily switch between different WireGuard endp
 - `curl` (for IP verification)
 
 ## Installation
-1. Upload the `.ipk` package to your router.
+1. Upload the `.apk` package to your router.
 2. Install via opkg:
    ```bash
    opkg update
-   opkg install luci-app-wg-endpoints_1.0.0-1_all.ipk
+   opkg install luci-app-wg-endpoints_1.0.0-1_all.apk
