@@ -20,5 +20,5 @@ A LuCI application for OpenWrt to easily managing different WireGuard endpoints.
 1. Upload the `.apk` package to your router.
 2. Install via opkg:
    ```bash
-   opkg update
-   opkg install luci-app-wg-endpoints_1.0.0-1_all.apk
+   apk update
+   apk add luci-app-wg-endpoints.apk
