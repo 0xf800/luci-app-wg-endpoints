@@ -11,7 +11,7 @@ A LuCI application for OpenWrt to easily managing different WireGuard endpoints.
 - **Status Monitoring**: Real-time feedback on connection status and PBR state within the LuCI interface.
 
 ## Requirements
-- OpenWrt (Tested on 24.10.5)
+- OpenWrt (Tested on 25.12.2)
 - `wireguard-tools`
 - `pbr` (optional, for policy-based routing support)
 - `curl` (for IP verification)
