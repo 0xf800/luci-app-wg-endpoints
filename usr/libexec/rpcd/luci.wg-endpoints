@@ -64,19 +64,20 @@ get_public_ip() {
 }
 
 # Start PBR in background with debug logging
-# Waits for any existing PBR process before starting
+# Waits for PBR to finish any running operations before starting
 start_pbr_background() {
 	(
-		log "PBR background: checking for existing processes"
+		log "PBR background: checking state"
 		log "PBR pids before start: $(pgrep -x pbr | tr '\n' ' ' || echo 'none')"
 
+		# Use pbr_running for accurate functional check — pgrep misses the main PBR process
 		WAIT=0
-		while pgrep -x pbr >/dev/null 2>&1 && [ $WAIT -lt 30 ]; do
+		while pbr_running && [ $WAIT -lt 30 ]; do
 			sleep 1
 			WAIT=$((WAIT+1))
-			log "Waiting for existing PBR process... ${WAIT}s"
+			log "Waiting for PBR to finish... ${WAIT}s"
 		done
-		[ $WAIT -gt 0 ] && log "Waited ${WAIT}s for previous PBR process"
+		[ $WAIT -gt 0 ] && log "Waited ${WAIT}s for PBR"
 
 		if pbr_installed; then
 			log "Starting PBR"
@@ -203,6 +204,8 @@ case "$1" in
 				DURATION=$(( $(date +%s) - START_TIME ))
 
 				if [ "$HANDSHAKE_OK" -eq 1 ]; then
+					# Wait for routing to stabilize before IP lookup
+					sleep 2
 					# Get public IP synchronously — included in response to JS
 					get_public_ip
 
