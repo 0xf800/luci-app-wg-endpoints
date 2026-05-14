@@ -19,7 +19,7 @@ pbr_running() {
 }
 
 # Wait for WireGuard handshake, max $1 seconds
-# Sets HANDSHAKE_OK=1 and ACTIVE_KEY if successful
+# Sets HANDSHAKE_OK=1 and ACTIVE_KEY on success
 wait_handshake() {
 	local max_wait="$1"
 	local i=0
@@ -52,35 +52,38 @@ restart_iface() {
 	log "ifup done"
 }
 
-# Start PBR + curl IP check in background
-start_pbr_and_report() {
-	local desc="$1"
-	local duration="$2"
-	if pbr_installed; then
-		log "Starting PBR (background)"
-		(
+# Get public IP and country via api.myip.com
+# Sets WAN_IP and WAN_COUNTRY
+get_public_ip() {
+	log "Fetching public IP via $IFACE"
+	local json
+	json=$(curl -s --max-time 5 --interface "$IFACE" api.myip.com 2>/dev/null)
+	WAN_IP=$(echo "$json" | jsonfilter -e "@.ip" 2>/dev/null)
+	WAN_COUNTRY=$(echo "$json" | jsonfilter -e "@.country" 2>/dev/null)
+	log "Public IP: ${WAN_IP:-none}, Country: ${WAN_COUNTRY:-none}"
+}
+
+# Start PBR in background with debug logging
+# Waits for any existing PBR process before starting
+start_pbr_background() {
+	(
+		log "PBR background: checking for existing processes"
+		log "PBR pids before start: $(pgrep -x pbr | tr '\n' ' ' || echo 'none')"
+
+		WAIT=0
+		while pgrep -x pbr >/dev/null 2>&1 && [ $WAIT -lt 30 ]; do
+			sleep 1
+			WAIT=$((WAIT+1))
+			log "Waiting for existing PBR process... ${WAIT}s"
+		done
+		[ $WAIT -gt 0 ] && log "Waited ${WAIT}s for previous PBR process"
+
+		if pbr_installed; then
+			log "Starting PBR"
 			/etc/init.d/pbr start >> "$LOGFILE" 2>&1
-			log "PBR started"
-			logger -t "wg-endpoints" \
-				"${desc} - PBR started - done, switch duration ${duration}s"
-			WAN_IP=$(curl -s --max-time 5 --interface "$IFACE" \
-				icanhazip.com 2>/dev/null | tr -d '[:space:]')
-			[ -n "$WAN_IP" ] \
-				&& logger -t "wg-endpoints" \
-					"active public ip for $IFACE: $WAN_IP" \
-				|| logger -t "wg-endpoints" \
-					"ip lookup failed for $IFACE"
-		) &
-	else
-		logger -t "wg-endpoints" "${desc} - done, switch duration ${duration}s"
-		WAN_IP=$(curl -s --max-time 5 --interface "$IFACE" \
-			icanhazip.com 2>/dev/null | tr -d '[:space:]')
-		[ -n "$WAN_IP" ] \
-			&& logger -t "wg-endpoints" \
-				"active public ip for $IFACE: $WAN_IP" \
-			|| logger -t "wg-endpoints" \
-				"ip lookup failed for $IFACE"
-	fi
+			log "PBR started (pids: $(pgrep -x pbr | tr '\n' ' ' || echo 'none'))"
+		fi
+	) &
 }
 
 case "$1" in
@@ -102,6 +105,7 @@ case "$1" in
 				IFACE=$(echo "$ARGS" | jsonfilter -e "@.iface")
 				log "=== check_status iface=$IFACE ==="
 
+				log "PBR check: pids=$(pgrep -x pbr | tr '\n' ' ' || echo 'none')"
 				if pbr_installed; then
 					PBR_INSTALLED=1
 					pbr_running && PBR_ACTIVE=1 || PBR_ACTIVE=0
@@ -127,6 +131,7 @@ case "$1" in
 				IFACE=$(echo "$ARGS" | jsonfilter -e "@.iface")
 				PEER=$(echo  "$ARGS" | jsonfilter -e "@.peer")
 				log "=== START apply iface=$IFACE peer=$PEER ==="
+				log "PBR pids at start: $(pgrep -x pbr | tr '\n' ' ' || echo 'none')"
 
 				if [ -z "$IFACE" ] || [ -z "$PEER" ]; then
 					log "ERROR: missing iface or peer"
@@ -136,7 +141,7 @@ case "$1" in
 
 				START_TIME=$(date +%s)
 
-				# Step 1: load current config and find previous active peer
+				# Step 1: load config, find previous active peer
 				. /lib/functions.sh
 				config_load network
 
@@ -181,9 +186,9 @@ case "$1" in
 					PBR_WAS_ACTIVE=1
 					logger -t "wg-endpoints" \
 						"switching endpoint initiated for $IFACE - PBR detected, stopping"
-					log "Stopping PBR"
+					log "Stopping PBR (pids: $(pgrep -x pbr | tr '\n' ' '))"
 					/etc/init.d/pbr stop >> "$LOGFILE" 2>&1
-					log "PBR stopped"
+					log "PBR stopped (pids remaining: $(pgrep -x pbr | tr '\n' ' ' || echo 'none'))"
 				else
 					logger -t "wg-endpoints" \
 						"switching endpoint initiated for $IFACE"
@@ -194,34 +199,60 @@ case "$1" in
 				restart_iface
 				log "Waiting for handshake (max 10s)"
 				wait_handshake 10
+
 				DURATION=$(( $(date +%s) - START_TIME ))
 
 				if [ "$HANDSHAKE_OK" -eq 1 ]; then
-					# Success — return result, start PBR in background
-					log "=== END apply handshake_ok=1 ==="
-					printf '{ "result": "ok", "handshake": 1, "active_key": "%s", "pbr_was_active": %d, "rolling_back": 0 }' \
-						"$ACTIVE_KEY" "$PBR_WAS_ACTIVE"
+					# Get public IP synchronously — included in response to JS
+					get_public_ip
 
-					start_pbr_and_report \
-						"endpoint changed to $PEER_DESC for $IFACE" \
-						"$DURATION"
+					SYSLOG_MSG="endpoint changed to: $PEER_DESC"
+					[ -n "$WAN_IP" ] && \
+						SYSLOG_MSG="${SYSLOG_MSG}; active public ip for $IFACE: $WAN_IP, $WAN_COUNTRY"
+					logger -t "wg-endpoints" "$SYSLOG_MSG"
+
+					log "=== END apply OK, duration=${DURATION}s ==="
+
+					# Send response to JS with ip+country included
+					printf '{ "result": "ok", "handshake": 1, "active_key": "%s", "pbr_was_active": %d, "rolling_back": 0, "peer_desc": "%s", "wan_ip": "%s", "wan_country": "%s" }' \
+						"$ACTIVE_KEY" "$PBR_WAS_ACTIVE" \
+						"$PEER_DESC" "${WAN_IP:-}" "${WAN_COUNTRY:-}"
+
+					# PBR start in background — curl already done
+					if pbr_installed; then
+						(
+							log "PBR background start after success"
+							log "PBR pids before: $(pgrep -x pbr | tr '\n' ' ' || echo 'none')"
+							WAIT=0
+							while pgrep -x pbr >/dev/null 2>&1 && [ $WAIT -lt 30 ]; do
+								sleep 1; WAIT=$((WAIT+1))
+								log "Waiting for existing PBR... ${WAIT}s"
+							done
+							[ $WAIT -gt 0 ] && log "Waited ${WAIT}s for PBR"
+							/etc/init.d/pbr start >> "$LOGFILE" 2>&1
+							log "PBR started (pids: $(pgrep -x pbr | tr '\n' ' ' || echo 'none'))"
+							logger -t "wg-endpoints" \
+								"PBR started - done, switch duration ${DURATION}s"
+						) &
+					fi
 
 				else
-					# Handshake failed — return immediately, rollback in background
-					log "=== END apply handshake_ok=0, initiating rollback ==="
+					# Handshake failed — send response immediately, rollback in background
+					log "=== END apply FAILED, initiating rollback ==="
 					logger -t "wg-endpoints" \
 						"handshake with $PEER_DESC failed, switching back to $PREV_DESC"
 
-					printf '{ "result": "ok", "handshake": 0, "active_key": "", "pbr_was_active": %d, "rolling_back": 1, "prev_desc": "%s" }' \
-						"$PBR_WAS_ACTIVE" "$PREV_DESC"
+					printf '{ "result": "ok", "handshake": 0, "active_key": "", "pbr_was_active": %d, "rolling_back": 1, "prev_desc": "%s", "peer_desc": "%s" }' \
+						"$PBR_WAS_ACTIVE" "$PREV_DESC" "$PEER_DESC"
 
-					# Rollback in background — JS already has its response
+					# Rollback entirely in background
 					(
 						log "=== ROLLBACK to $PREV_PEER ($PREV_DESC) ==="
+						log "PBR pids at rollback start: $(pgrep -x pbr | tr '\n' ' ' || echo 'none')"
 
-						# Re-enable previous peer
 						. /lib/functions.sh
 						config_load network
+
 						rollback_peer_state() {
 							local section="$1"
 							if [ "$section" = "$PREV_PEER" ]; then
@@ -244,19 +275,28 @@ case "$1" in
 
 						if [ "$HANDSHAKE_OK" -eq 1 ]; then
 							log "Rollback handshake OK"
-							start_pbr_and_report \
-								"endpoint changed to $PREV_DESC for $IFACE (rollback)" \
-								"$ROLLBACK_DURATION"
+							get_public_ip
+
+							SYSLOG_MSG="handshake failed, reverted to $PREV_DESC: OK"
+							[ -n "$WAN_IP" ] && \
+								SYSLOG_MSG="${SYSLOG_MSG}; active public ip for $IFACE: $WAN_IP, $WAN_COUNTRY"
+							logger -t "wg-endpoints" "$SYSLOG_MSG"
+
+							start_pbr_background
+							log "=== ROLLBACK complete, duration=${ROLLBACK_DURATION}s ==="
+
 						else
-							# Double fail — start PBR anyway, report failure
-							log "Rollback handshake FAILED — double fail"
+							# Double fail
+							log "=== ROLLBACK FAILED — double fail ==="
 							wg show "$IFACE" >> "$LOGFILE" 2>&1
 							logger -t "wg-endpoints" \
-								"switching failed, activate debug logs and try again in a few minutes"
+								"ERROR: switching failed, no active endpoint, check logs"
+
+							log "PBR pids at double fail: $(pgrep -x pbr | tr '\n' ' ' || echo 'none')"
 							if pbr_installed; then
 								log "Starting PBR despite double fail"
 								/etc/init.d/pbr start >> "$LOGFILE" 2>&1
-								log "PBR started"
+								log "PBR started after double fail"
 							fi
 						fi
 					) &
