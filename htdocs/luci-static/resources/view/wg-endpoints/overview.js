@@ -154,7 +154,7 @@ return view.extend({
 
 		if (!selected) {
 			self._initPanel(container);
-			self._addLine('Please select an endpoint first.', 'warn');
+			self._addLine(_('Please select an endpoint first.'), 'warn');
 			return;
 		}
 
@@ -162,7 +162,7 @@ return view.extend({
 		if (btn) btn.disabled = true;
 
 		self._initPanel(container);
-		self._addLine('Checking PBR and WireGuard status…', 'info', true);
+		self._addLine(_('Checking PBR and WireGuard status…'), 'info', true);
 
 		callCheckStatus(ifname)
 		.then(function(st) {
@@ -170,21 +170,21 @@ return view.extend({
 
 			if (st.pbr_installed) {
 				self._addLine(
-					'PBR installed — ' + (st.pbr_active ? 'active' : 'inactive'),
+					_('PBR installed') + ' — ' + (st.pbr_active ? _('active') : _('inactive')),
 					st.pbr_active ? 'ok' : 'warn'
 				);
 			}
 			if (st.wg_endpoint) {
 				self._addLine(
-					'Current endpoint: ' + st.wg_endpoint +
+					_('Current endpoint: ') + st.wg_endpoint +
 					(st.wg_handshake ? ' — ' + st.wg_handshake : ''),
 					'info'
 				);
 			}
 
-			self._addLine('Switching endpoint…', 'info', true);
-			self._addLine('Restarting interface ' + ifname + '…', 'info', true);
-			self._addLine('Waiting for handshake (max 10s)…', 'info', true);
+			self._addLine(_('Switching endpoint…'), 'info', true);
+			self._addLine(_('Restarting interface ') + ifname + '…', 'info', true);
+			self._addLine(_('Waiting for handshake (max 10s)…'), 'info', true);
 
 			return callApply(ifname, selected.value);
 		})
@@ -192,7 +192,7 @@ return view.extend({
 			self._clearSpinners();
 
 			if (res.error) {
-				self._addLine('Error: ' + res.error, 'error');
+				self._addLine(_('Error: ') + res.error, 'error');
 				if (btn) btn.disabled = false;
 				return;
 			}
@@ -200,24 +200,24 @@ return view.extend({
 			if (res.handshake) {
 				// Success
 				if (res.pbr_was_active)
-					self._addLine('PBR stopped', 'ok');
-				self._addLine('Interface ' + ifname + ' restarted', 'ok');
+					self._addLine(_('PBR stopped'), 'ok');
+				self._addLine(_('Interface ') + ifname + _(' restarted'), 'ok');
 				self._addLine(
-					'Handshake OK — ' + String(res.active_key).substring(0, 16) + '…',
+					_('Handshake OK — ') + String(res.active_key).substring(0, 16) + '…',
 					'ok'
 				);
-				self._addLine('PBR restarting in background…', 'ok');
+				self._addLine(_('PBR restarting in background…'), 'ok');
 				setTimeout(function() { window.location.reload(); }, 2000);
 
 			} else if (res.rolling_back) {
 				// Handshake failed, rollback initiated in background
-				self._addLine('Interface ' + ifname + ' restarted', 'ok');
+				self._addLine(_('Interface ') + ifname + _(' restarted'), 'ok');
 				self._addLine(
-					'Handshake failed — rolling back to ' + res.prev_desc + '…',
+					_('Handshake failed — rolling back to ') + res.prev_desc + '…',
 					'notice'
 				);
 				self._addLine(
-					'Rollback running in background — check syslog for result.',
+					_('Rollback running in background — check syslog for result.'),
 					'info'
 				);
 				// Reload after rollback completes (~20s)
@@ -225,9 +225,9 @@ return view.extend({
 
 			} else {
 				// Switching failed — double fail already handled in background
-				self._addLine('Handshake failed', 'error');
+				self._addLine(_('Handshake failed'), 'error');
 				self._addLine(
-					'Switching failed — activate debug logs and try again in a few minutes.',
+					_('Switching failed — activate debug logs and try again in a few minutes.'),
 					'error'
 				);
 				if (btn) btn.disabled = false;
@@ -235,7 +235,7 @@ return view.extend({
 		})
 		.catch(function(e) {
 			self._clearSpinners();
-			self._addLine('Error: ' + (e.message || String(e)), 'error');
+			self._addLine(_('Error: ') + (e.message || String(e)), 'error');
 			if (btn) btn.disabled = false;
 		});
 	},
@@ -254,7 +254,7 @@ return view.extend({
 			}
 		})
 		.catch(function(e) {
-			alert('Error: ' + String(e));
+			alert(_('Error: ') + String(e));
 		});
 	},
 
@@ -285,7 +285,7 @@ return view.extend({
 			}
 		})
 		.catch(function(e) {
-			alert('Error: ' + String(e));
+			alert(_('Error: ') + String(e));
 		});
 	},
 
