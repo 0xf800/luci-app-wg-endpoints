@@ -1,0 +1,112 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "WireGuard Endpoints"
+msgstr "WireGuard 端点"
+
+msgid "No WireGuard interfaces found."
+msgstr "未找到 WireGuard 接口。"
+
+msgid "Select an endpoint and click Switch Endpoint. PBR will be stopped, interface restarted, then PBR restarted automatically."
+msgstr "选择一个端点并点击切换端点。PBR 将被停止，接口重启后 PBR 自动重启。"
+
+msgid "Description"
+msgstr "描述"
+
+msgid "Host"
+msgstr "主机"
+
+msgid "Port"
+msgstr "端口"
+
+msgid "Public Key"
+msgstr "公钥"
+
+msgid "Actions"
+msgstr "操作"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Delete this endpoint?"
+msgstr "确定删除此端点？"
+
+msgid "Switch Endpoint"
+msgstr "切换端点"
+
+msgid "+ Add endpoint for "
+msgstr "+ 为 %s 添加端点"
+
+msgid "Display name for this endpoint"
+msgstr "此端点的显示名称"
+
+msgid "IP address or hostname of the VPN server"
+msgstr "VPN 服务器的 IP 地址或主机名"
+
+msgid "WireGuard public key of this server"
+msgstr "该服务器的 WireGuard 公钥"
+
+msgid "Leave empty for default 51820"
+msgstr "留空则使用默认端口 51820"
+
+msgid "Add"
+msgstr "添加"
+
+msgid "Description, Host and Public Key are required."
+msgstr "描述、主机和公钥为必填项。"
+
+msgid "Please select an endpoint first."
+msgstr "请先选择一个端点。"
+
+msgid "Checking PBR and WireGuard status…"
+msgstr "正在检查 PBR 和 WireGuard 状态……"
+
+msgid "PBR installed"
+msgstr "PBR 已安装"
+
+msgid "active"
+msgstr "运行中"
+
+msgid "inactive"
+msgstr "未运行"
+
+msgid "Current endpoint: "
+msgstr "当前端点："
+
+msgid "Switching endpoint…"
+msgstr "正在切换端点……"
+
+msgid "Restarting interface "
+msgstr "正在重启接口 "
+
+msgid " restarted"
+msgstr " 已重启"
+
+msgid "Waiting for handshake (max 10s)…"
+msgstr "等待握手（最多 10 秒）……"
+
+msgid "Error: "
+msgstr "错误："
+
+msgid "PBR stopped"
+msgstr "PBR 已停止"
+
+msgid "Handshake OK — "
+msgstr "握手成功 — "
+
+msgid "PBR restarting in background…"
+msgstr "PBR 正在后台重启……"
+
+msgid "Handshake failed — rolling back to "
+msgstr "握手失败 — 正在回滚至 "
+
+msgid "Rollback running in background — check syslog for result."
+msgstr "回滚正在后台执行 — 请查看系统日志了解结果。"
+
+msgid "Handshake failed"
+msgstr "握手失败"
+
+msgid "Switching failed — activate debug logs and try again in a few minutes."
+msgstr "切换失败 — 请开启调试日志后稍等片刻再试。"
